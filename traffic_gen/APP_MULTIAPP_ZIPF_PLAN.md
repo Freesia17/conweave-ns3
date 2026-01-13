@@ -17,7 +17,7 @@
   - `dst_port` is fixed per app (e.g., `port_base + dst_app_id`).
 
   ## Generator Parameters (new)
-  - `--apps A` number of apps per host.
+  - `--napps N` (or `-a N`) number of apps per host.
   - `--zaa s_app` Zipf exponent for per-app send/receive rates (zipf_alpha_app).
   - `--zah s_host` Zipf exponent for per-host total send/receive rates (zipf_alpha_host; used in Goal 2).
   - `--port-base`.
