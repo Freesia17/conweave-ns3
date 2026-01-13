@@ -18,8 +18,8 @@
 
   ## Generator Parameters (new)
   - `--apps A` number of apps per host.
-  - `--zipf-app-send s_app_s`, `--zipf-app-recv s_app_r` (Zipf exponents for per-app rates).
-  - `--zipf-host-send s_host_s`, `--zipf-host-recv s_host_r` (Zipf exponents for per-host totals; used in Goal 2).
+  - `--zaa s_app` Zipf exponent for per-app send/receive rates (zipf_alpha_app).
+  - `--zah s_host` Zipf exponent for per-host total send/receive rates (zipf_alpha_host; used in Goal 2).
   - `--port-base`.
 
   ## Notation
