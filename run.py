@@ -15,7 +15,8 @@ import argparse
 from datetime import date
 
 # randomID
-random.seed(datetime.now())
+# Use a supported seed type for Python 3.11+.
+random.seed(datetime.now().timestamp())
 MAX_RAND_RANGE = 1000000000
 
 # config template
@@ -428,4 +429,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

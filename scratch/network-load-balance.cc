@@ -185,7 +185,8 @@ uint16_t *port_per_host;
 
 // Scheduling input flows from flow.txt
 struct FlowInput {
-    uint32_t src, dst, pg, maxPacketCount, port;
+    uint32_t src, dst, pg, maxPacketCount;
+    uint16_t sport, dport;
     double start_time;
     uint32_t idx;
 };
@@ -197,8 +198,8 @@ uint32_t flow_num;
  */
 void ReadFlowInput() {
     if (flow_input.idx < flow_num) {
-        flowf >> flow_input.src >> flow_input.dst >> flow_input.pg >> flow_input.maxPacketCount >>
-            flow_input.start_time;
+        flowf >> flow_input.src >> flow_input.dst >> flow_input.sport >> flow_input.dport >>
+            flow_input.pg >> flow_input.maxPacketCount >> flow_input.start_time;
         assert(n.Get(flow_input.src)->GetNodeType() == 0 &&
                n.Get(flow_input.dst)->GetNodeType() == 0);
     } else {
@@ -221,12 +222,10 @@ void ScheduleFlowInputs(FILE *infile) {
         dst = flow_input.dst;
 
         // src port
-        sport = portNumber[src];  // get a new port number
-        portNumber[src] = portNumber[src] + 1;
+        sport = flow_input.sport;
 
         // dst port
-        dport = dportNumber[dst];
-        dportNumber[dst] = dportNumber[dst] + 1;
+        dport = flow_input.dport;
 
         target_len = flow_input.maxPacketCount;  // this is actually not packet-count, but bytes
         if (target_len == 0) {
