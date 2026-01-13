@@ -54,9 +54,7 @@ def redistribute_capacity(rates, max_cap):
     """
     rates = np.array(rates, dtype=float)
     
-    iteration = 0
     while True:
-        iteration += 1
         excess = 0.0
         
         # 1. Cap and collect excess
