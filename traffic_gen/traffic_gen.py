@@ -52,7 +52,6 @@ def redistribute_capacity(rates, max_cap):
        Probability of receiving excess is proportional to remaining capacity.
     4. Repeat until no excess or all hosts full.
     """
-    n = len(rates)
     rates = np.array(rates, dtype=float)
     
     iteration = 0
