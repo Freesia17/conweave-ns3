@@ -87,7 +87,7 @@ def redistribute_capacity(rates, max_cap):
         total_remaining = np.sum(remaining)
         
         if total_remaining <= 0:
-             break
+            break
 
         probs = remaining / total_remaining
         
