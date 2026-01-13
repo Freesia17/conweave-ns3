@@ -123,7 +123,7 @@ if __name__ == "__main__":
     base_port = 10000
 
     if not options.nhost:
-        print("Please use -n")
+        print("Missing required argument: number of hosts. Please specify it using -n or --nhost.")
         sys.exit(0)
         
     nhost = int(options.nhost)
