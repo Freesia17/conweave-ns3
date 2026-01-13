@@ -108,14 +108,14 @@ if __name__ == "__main__":
     parser = OptionParser()
     parser.add_option("-c", "--cdf", dest = "cdf_file", help = "cdf file", default = "uniform_distribution.txt")
     parser.add_option("-n", "--nhost", dest = "nhost", help = "number of hosts")
-    parser.add_option("-a", "--napps", dest = "napps", defaults="1", help = "apps per host")
-    parser.add_option("-l", "--load", dest = "load", defaults="0.3", help = "load")
-    parser.add_option("-b", "--bandwidth", dest = "bandwidth", defaults="10G", help = "bandwidth")
-    parser.add_option("-t", "--time", dest = "time", defaults="10", help = "time")
-    parser.add_option("-o", "--output", dest = "output", defaults="tmp_traffic.txt", help = "output")
+    parser.add_option("-a", "--napps", dest = "napps", default="1", help = "apps per host")
+    parser.add_option("-l", "--load", dest = "load", default="0.3", help = "load")
+    parser.add_option("-b", "--bandwidth", dest = "bandwidth", default="10G", help = "bandwidth")
+    parser.add_option("-t", "--time", dest = "time", default="10", help = "time")
+    parser.add_option("-o", "--output", dest = "output", default="tmp_traffic.txt", help = "output")
     # Zipf parameters
-    parser.add_option("--zah", dest = "zipf_alpha_host", defaults="0.001", help = "Zipf alpha Host")
-    parser.add_option("--zaa", dest = "zipf_alpha_app", defaults="0.001", help = "Zipf alpha App")
+    parser.add_option("--zah", dest = "zipf_alpha_host", default="0.001", help = "Zipf alpha Host")
+    parser.add_option("--zaa", dest = "zipf_alpha_app", default="0.001", help = "Zipf alpha App")
     
     options,args = parser.parse_args()
 
