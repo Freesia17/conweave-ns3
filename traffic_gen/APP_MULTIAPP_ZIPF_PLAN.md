@@ -68,7 +68,7 @@
   - Use these ports directly instead of `portNumber[src]++` and `dportNumber[dst]++`.
   - Keep existing `pg`, `size`, `start_time` semantics unchanged.
 
-  ## Validation Checks (by modify `traffic_gen.py`)
+  ## Validation Checks (by modifying `traffic_gen.py`)
   - Per-host send/recv rate <= `bandwidth` after redistribution.
   - Total send rate matches total recv rate (up to sampling error).
   - Per-app rate distributions match Zipf targets.
