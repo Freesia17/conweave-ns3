@@ -1,4 +1,5 @@
 #include "rdma-hw.h"
+#include "ooo-system.h"
 
 #include <ns3/ipv4-header.h>
 #include <ns3/seq-ts-header.h>
@@ -154,6 +155,12 @@ void RdmaHw::Setup(QpCompleteCallback cb) {
     }
     // setup qp complete callback
     m_qpCompleteCallback = cb;
+
+    if (!m_ooo) {
+        OooSystemAdapter::Config cfg;
+        m_ooo.reset(new OooSystemAdapter(cfg));
+        m_ooo->SetUdpHandler(MakeCallback(&RdmaHw::HandleOooUdp, this));
+    }
 }
 
 uint32_t RdmaHw::GetNicIdxOfQp(Ptr<RdmaQueuePair> qp) {
@@ -576,6 +583,10 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch) {
     //     << "l3Prot:" << ch.l3Prot << ",at" << Simulator::Now() << std::endl;
     // #endif
     if (ch.l3Prot == 0x11) {  // UDP
+        if (m_ooo) {
+            m_ooo->HandleUdp(p, ch);
+            return 0;
+        }
         return ReceiveUdp(p, ch);
     } else if (ch.l3Prot == 0xFF) {  // CNP
         return ReceiveCnp(p, ch);
@@ -585,6 +596,10 @@ int RdmaHw::Receive(Ptr<Packet> p, CustomHeader &ch) {
         return ReceiveAck(p, ch);
     }
     return 0;
+}
+
+void RdmaHw::HandleOooUdp(Ptr<Packet> p, const CustomHeader &ch) {
+    ReceiveUdp(p, const_cast<CustomHeader &>(ch));
 }
 
 /**

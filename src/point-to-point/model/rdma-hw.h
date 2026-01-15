@@ -8,6 +8,7 @@
 
 #include <unordered_map>
 #include <unordered_set>
+#include <memory>
 
 #include "qbb-net-device.h"
 #include "rdma-queue-pair.h"
@@ -186,6 +187,9 @@ class RdmaHw : public Object {
     Time m_irn_rtoLow;
     Time m_irn_rtoHigh;
     uint32_t m_irn_bdp;
+
+    void HandleOooUdp(Ptr<Packet> p, const CustomHeader &ch);
+    std::unique_ptr<class OooSystemAdapter> m_ooo;
 };
 
 } /* namespace ns3 */
