@@ -26,6 +26,24 @@ enum class UpdateState { IDLE, SUCCESS, FAIL };
 enum class UpdateType { IDLE, INSERT, DELETE, REPLACE };
 enum class BlockUpdate { ALLOCATE, UNBLOCK };
 
+// Hash UDP five-tuple into a stable, non-negative flow_id.
+int32_t FiveTupleFlowId(const CustomHeader &ch) {
+  uint64_t hash = 1469598103934665603ULL;  // FNV-1a 64-bit offset basis
+  auto mix = [&hash](uint64_t v) {
+    hash ^= v;
+    hash *= 1099511628211ULL;  // FNV-1a prime
+  };
+
+  mix(static_cast<uint64_t>(ch.sip));
+  mix(static_cast<uint64_t>(ch.dip));
+  mix(static_cast<uint64_t>(ch.udp.sport));
+  mix(static_cast<uint64_t>(ch.udp.dport));
+  mix(static_cast<uint64_t>(ch.l3Prot));
+
+  uint32_t folded = static_cast<uint32_t>(hash ^ (hash >> 32));
+  return static_cast<int32_t>(folded & 0x7fffffff);
+}
+
 struct PacketCtx {
   Ptr<Packet> pkt;
   CustomHeader ch;
@@ -168,11 +186,8 @@ struct OooSystemAdapter::Impl {
       return;
     }
 
-    FlowIDNUMTag fit;
-    int32_t flow_id = -1;
-    if (p && p->PeekPacketTag(fit)) {
-      flow_id = fit.GetId();
-    }
+    // Derive flow_id from five-tuple instead of relying on tags.
+    int32_t flow_id = FiveTupleFlowId(ch);
 
     if (flow_id < 0) {
       Simulator::ScheduleNow(udpHandler, p, ch);

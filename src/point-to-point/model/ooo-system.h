@@ -48,7 +48,7 @@ public:
   void SetConfig(const Config &cfg);
   void SetUdpHandler(Callback<void, Ptr<Packet>, const CustomHeader &> cb);
 
-  // Entry point for UDP packets from RdmaHw::Receive.
+  // Entry point for UDP packets from RdmaHw::Receive (flow_id from five-tuple).
   void HandleUdp(Ptr<Packet> p, const CustomHeader &ch);
 
 private:
