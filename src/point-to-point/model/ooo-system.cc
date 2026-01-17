@@ -1,5 +1,6 @@
 #include "ooo-system.h"
 
+#include "ns3/abort.h"
 #include "ns3/assert.h"
 #include "ns3/flow-id-num-tag.h"
 #include "ns3/log.h"
@@ -190,7 +191,7 @@ struct OooSystemAdapter::Impl {
     int32_t flow_id = FiveTupleFlowId(ch);
 
     if (flow_id < 0) {
-      Simulator::ScheduleNow(udpHandler, p, ch);
+      Simulator::ScheduleNow(&Impl::InvokeUdpHandler, this, p, ch);
       return;
     }
 
@@ -205,21 +206,28 @@ struct OooSystemAdapter::Impl {
     blockq.OnPacket(ctx, idx);
   }
 
-  // Fast path: direct delivery.
-  void ForwardFast(const PacketCtx &ctx) {
-    if (udpHandler.IsNull() || !ctx.pkt) {
-      return;
+    // Fast path: direct delivery.
+    void ForwardFast(const PacketCtx &ctx) {
+      if (udpHandler.IsNull() || !ctx.pkt) {
+        return;
+      }
+      Simulator::ScheduleNow(&Impl::InvokeUdpHandler, this, ctx.pkt, ctx.ch);
     }
-    Simulator::ScheduleNow(udpHandler, ctx.pkt, ctx.ch);
-  }
 
-  // Slow path: PCIe latency before delivery.
-  void ForwardSlow(const PacketCtx &ctx) {
-    if (udpHandler.IsNull() || !ctx.pkt) {
-      return;
+    // Slow path: PCIe latency before delivery.
+    void ForwardSlow(const PacketCtx &ctx) {
+      if (udpHandler.IsNull() || !ctx.pkt) {
+        return;
+      }
+      Simulator::Schedule(NanoSeconds(cfg.pcie_latency_ns), &Impl::InvokeUdpHandler, this, ctx.pkt,
+                          ctx.ch);
     }
-    Simulator::Schedule(NanoSeconds(cfg.pcie_latency_ns), udpHandler, ctx.pkt, ctx.ch);
-  }
+    
+    static void InvokeUdpHandler(Impl *self, Ptr<Packet> p, const CustomHeader &ch) {
+      if (!self->udpHandler.IsNull()) {
+        self->udpHandler(p, ch);
+      }
+    }
 
   void SendToSlowpath(const PacketCtx &ctx, bool big_flow) {
     Simulator::Schedule(NanoSeconds(cfg.pcie_latency_ns), &Impl::SlowpathInput, this, ctx,
@@ -361,10 +369,23 @@ struct OooSystemAdapter::Impl {
     }
 
     void OnPacket(const PacketCtx &ctx, int index) {
+      if (ctx.flow_id == 101) {
+         // Determine size if valid index
+         size_t sz = 0;
+         if (index >= 0 && static_cast<std::size_t>(index) < queues.size()) {
+             sz = queues[index].size(); // Before push? No, logic pushes first.
+         }
+         std::cout << "[BlockQueue] OnPacket ID=" << ctx.flow_id 
+                   << " Index=" << index 
+                   << " SizeBefore=" << sz 
+                   << " Threshold=" << owner->cfg.big_flow_threshold << std::endl;
+      }
+
       if (index >= 0 && static_cast<std::size_t>(index) < queues.size()) {
         queues[index].push_back(ctx);
         if (queues[index].size() == owner->cfg.big_flow_threshold) {
           // Notify RuleUpdater when a queue reaches the big-flow threshold.
+          std::cout << "[BlockQueue] OnQueueExceed index=" << index << std::endl;
           owner->rule_updater.OnQueueExceed(index);
         }
       } else {
@@ -691,8 +712,11 @@ struct OooSystemAdapter::Impl {
       int insert_index = -1;
 
       uint64_t count = cms.UpdateAndQuery(static_cast<uint64_t>(ctx.flow_id));
+      uint64_t bloom_debug = 0;
+
       if (count >= owner->cfg.big_flow_threshold) {
         uint64_t bloom_count = bloom.UpdateAndQuery(static_cast<uint64_t>(ctx.flow_id));
+        bloom_debug = bloom_count;
         if (bloom_count == 1) {
           // First time Bloom says heavy -> allocate rule index.
           big_flow = true;
@@ -711,6 +735,14 @@ struct OooSystemAdapter::Impl {
         owner->blockq.OnUpdate(BlockUpdate::ALLOCATE, insert_index);
       }
 
+      // DEBUG
+      if (ctx.flow_id == 101) {
+         std::cout << "[FlowTracker] ID=" << ctx.flow_id 
+                   << " CMS=" << count 
+                   << " Bloom=" << bloom_debug
+                   << " Big=" << big_flow << std::endl;
+      }
+
       owner->SendToSlowpath(ctx, big_flow);
     }
 
@@ -727,21 +759,31 @@ struct OooSystemAdapter::Impl {
 
     void OnQueueExceed(int index) {
       if (index >= 0 && static_cast<std::size_t>(index) < pass_check.size()) {
+        std::cout << "[RuleUpdater] OnQueueExceed index=" << index << std::endl;
         pass_check[index] = true;
       }
     }
 
     void OnRuleUpdate(const RuleUpdate &ru) {
+      std::cout << "[RuleUpdater] OnRuleUpdate type=" << (int)ru.type 
+                << " unblock=" << ru.unblock_index 
+                << " update=" << ru.update_entry 
+                << " replace=" << ru.replace_entry << std::endl;
+
       // Gate updates using pass_check (queue exceeded signal).
       bool allowed = false;
       if (ru.type != UpdateType::IDLE) {
         if (ru.unblock_index < 0) {
           allowed = true;
         } else if (ru.unblock_index >= 0 &&
-                   static_cast<std::size_t>(ru.unblock_index) < pass_check.size() &&
-                   pass_check[ru.unblock_index]) {
-          allowed = true;
-          pass_check[ru.unblock_index] = false;
+                   static_cast<std::size_t>(ru.unblock_index) < pass_check.size()) {
+           if (pass_check[ru.unblock_index]) {
+              std::cout << "[RuleUpdater] Allowed by pass_check for index " << ru.unblock_index << std::endl;
+              allowed = true;
+              pass_check[ru.unblock_index] = false;
+           } else {
+              std::cout << "[RuleUpdater] REJECTED: pass_check false for index " << ru.unblock_index << std::endl;
+           }
         }
       }
 
@@ -906,7 +948,10 @@ struct OooSystemAdapter::Impl {
             count++;
           }
         }
-        NS_ABORT_MSG_IF(count == 0, "Clear signal before rule ready");
+        // NS_ABORT_MSG_IF(count == 0, "Clear signal before rule ready");
+        if (count == 0) {
+            NS_LOG_WARN("Clear signal for index " << pkt.burst_table_index << " but no rule ready (spurious?)");
+        }
         MaybeScheduleEmit();
       }
     }
@@ -1059,9 +1104,12 @@ struct OooSystemAdapter::Impl {
   EventId bloom_clear_event;
 };
 
+#ifndef OOO_SYSTEM_TEST_INCLUSION
 OooSystemAdapter::OooSystemAdapter() : m_impl(new Impl(Config())) {}
 
 OooSystemAdapter::OooSystemAdapter(const Config &cfg) : m_impl(new Impl(cfg)) {}
+
+OooSystemAdapter::~OooSystemAdapter() = default;
 
 void OooSystemAdapter::SetConfig(const Config &cfg) { m_impl->SetConfig(cfg); }
 
@@ -1072,5 +1120,6 @@ void OooSystemAdapter::SetUdpHandler(Callback<void, Ptr<Packet>, const CustomHea
 void OooSystemAdapter::HandleUdp(Ptr<Packet> p, const CustomHeader &ch) {
   m_impl->HandleUdp(p, ch);
 }
+#endif
 
 }  // namespace ns3

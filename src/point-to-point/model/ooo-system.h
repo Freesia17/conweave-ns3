@@ -44,6 +44,7 @@ public:
 
   OooSystemAdapter();
   explicit OooSystemAdapter(const Config &cfg);
+  ~OooSystemAdapter();
 
   void SetConfig(const Config &cfg);
   void SetUdpHandler(Callback<void, Ptr<Packet>, const CustomHeader &> cb);
