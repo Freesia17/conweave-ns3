@@ -391,12 +391,12 @@ void TestClearSignalEmission() {
     mock_rule_2.ready_time_ns = UINT64_MAX;
     g_impl->slow.rule_delay.push_back(mock_rule_2);
 
-    // Allocate queue 2 -> adds to active_indices
+    // Allocate queue 2 -> adds to pending_clear
     g_impl->blockq.OnUpdate(BlockUpdate::ALLOCATE, 2);
     RunFor(1);
     
-    ASSERT_EQ(g_impl->blockq.active_indices.size(), 1u);
-    ASSERT_EQ(g_impl->blockq.active_indices[0], 2);
+    ASSERT_EQ(g_impl->blockq.pending_clear.size(), 1u);
+    ASSERT_EQ(g_impl->blockq.pending_clear[0], 2);
     
     // Inject mock rule for index 3
     Rule mock_rule_3;
@@ -405,22 +405,24 @@ void TestClearSignalEmission() {
     mock_rule_3.ready_time_ns = UINT64_MAX;
     g_impl->slow.rule_delay.push_back(mock_rule_3);
 
-    // Add another active index
+    // Add another pending clear
     g_impl->blockq.OnUpdate(BlockUpdate::ALLOCATE, 3);
     RunFor(1);
-    ASSERT_EQ(g_impl->blockq.active_indices.size(), 2u);
+    ASSERT_EQ(g_impl->blockq.pending_clear.size(), 2u);
     
-    // Capture initial cursor
-    std::size_t initial_cursor = g_impl->blockq.clear_cursor;
+    // Capture initial pending_clear size
+    std::size_t initial_pending = g_impl->blockq.pending_clear.size();
+    
+    // Trigger ProcessOne by sending a packet to miss_queue
+    // This will cause ProcessOne to emit clear signals after processing the packet
+    EnqueuePacket(999, -1);  // -1 = miss_queue
     
     // Run simulation to allow clear signal emission
     RunFor(10);
     
-    // Verify cursor has rotated (changed from initial)
-    // Since size is 2 and we ran for 10ns (multiple cycles), cursor should have changed
-    // Due to modular arithmetic with size 2, it will oscillate between 0 and 1
-    // We just verify the mechanism works by checking active_indices are still tracked
-    ASSERT_EQ(g_impl->blockq.active_indices.size(), 2u);
+    // After clear signals are emitted, pending_clear should be empty
+    // (each clear signal removes one entry)
+    ASSERT_EQ(g_impl->blockq.pending_clear.size(), 0u);
     
     std::cout << "[PASSED] TestClearSignalEmission" << std::endl;
 }
@@ -747,32 +749,19 @@ void TestClearSignalRotation() {
         RunFor(1);
     }
     
-    ASSERT_EQ(g_impl->blockq.active_indices.size(), 4u);
+    ASSERT_EQ(g_impl->blockq.pending_clear.size(), 4u);
     
-    // 记录初始 cursor
-    std::size_t initial_cursor = g_impl->blockq.clear_cursor;
+    // 记录初始 pending_clear size
+    std::size_t initial_pending = g_impl->blockq.pending_clear.size();
     
-    // 运行足够长的时间，让 cursor 轮换多次
+    // Trigger ProcessOne by sending a packet to miss_queue
+    EnqueuePacket(999, -1);
+    
+    // 运行足够长的时间，让所有 clear signal 都发送出去
     RunFor(50);
     
-    // Cursor 应该已经轮换过（至少变过一次）
-    // 由于 ProcessOne 每次调用可能发送一个 Clear 信号并递增 cursor
-    // 50ns 应该足够多次轮换
-    
-    // 验证 active_indices 仍然正确维护
-    ASSERT_EQ(g_impl->blockq.active_indices.size(), 4u);
-    
-    // 验证所有索引都在列表中
-    for (int idx = 0; idx < 4; idx++) {
-        bool found = false;
-        for (size_t i = 0; i < g_impl->blockq.active_indices.size(); i++) {
-            if (g_impl->blockq.active_indices[i] == idx) {
-                found = true;
-                break;
-            }
-        }
-        ASSERT_TRUE(found);
-    }
+    // 所有 clear signal 都已发送，pending_clear 应该为空
+    ASSERT_EQ(g_impl->blockq.pending_clear.size(), 0u);
     
     std::cout << "[PASSED] TestClearSignalRotation" << std::endl;
 }

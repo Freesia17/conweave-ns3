@@ -356,8 +356,7 @@ struct OooSystemAdapter::Impl {
       queues.assign(owner->cfg.burst_table_volume, std::deque<PacketCtx>());
       blocking.assign(owner->cfg.burst_table_volume, false);
       released.assign(owner->cfg.burst_table_volume, false);
-      active_indices.clear();
-      clear_cursor = 0;
+      pending_clear.clear();
       rr_pointer = 0;
       drain_index = -1;
       pool_remaining = static_cast<int>(owner->cfg.blockqueue_pool_size);
@@ -369,23 +368,10 @@ struct OooSystemAdapter::Impl {
     }
 
     void OnPacket(const PacketCtx &ctx, int index) {
-      if (ctx.flow_id == 101) {
-         // Determine size if valid index
-         size_t sz = 0;
-         if (index >= 0 && static_cast<std::size_t>(index) < queues.size()) {
-             sz = queues[index].size(); // Before push? No, logic pushes first.
-         }
-         std::cout << "[BlockQueue] OnPacket ID=" << ctx.flow_id 
-                   << " Index=" << index 
-                   << " SizeBefore=" << sz 
-                   << " Threshold=" << owner->cfg.big_flow_threshold << std::endl;
-      }
-
       if (index >= 0 && static_cast<std::size_t>(index) < queues.size()) {
         queues[index].push_back(ctx);
         if (queues[index].size() == owner->cfg.big_flow_threshold) {
           // Notify RuleUpdater when a queue reaches the big-flow threshold.
-          std::cout << "[BlockQueue] OnQueueExceed index=" << index << std::endl;
           owner->rule_updater.OnQueueExceed(index);
         }
       } else {
@@ -443,15 +429,15 @@ struct OooSystemAdapter::Impl {
       if (index < 0 || static_cast<std::size_t>(index) >= queues.size()) {
         return;
       }
-      // Allocate -> block queue, and track for clear-signal emission.
+      // Allocate -> block queue, and add to pending clear signal list.
       blocking[index] = true;
       released[index] = false;
-      if (std::find(active_indices.begin(), active_indices.end(), index) == active_indices.end()) {
-        active_indices.push_back(index);
-        if (active_indices.size() == 1) {
-          clear_cursor = 0;
-        }
+      // Add to pending_clear if not already present.
+      if (std::find(pending_clear.begin(), pending_clear.end(), index) == pending_clear.end()) {
+        pending_clear.push_back(index);
       }
+      // Do NOT trigger ProcessOne here - clear signals are low priority
+      // and will be emitted when ProcessOne is next triggered by packets or unblock.
     }
 
     void ApplyUnblock(int index) {
@@ -479,20 +465,10 @@ struct OooSystemAdapter::Impl {
       // Release frees a rule slot in FlowTracker.
       released[index] = true;
       owner->flow.Release(index);
-      auto it = std::find(active_indices.begin(), active_indices.end(), index);
-      if (it != active_indices.end()) {
-        std::size_t pos = static_cast<std::size_t>(std::distance(active_indices.begin(), it));
-        active_indices.erase(it);
-        if (active_indices.empty()) {
-          clear_cursor = 0;
-        } else {
-          if (pos < clear_cursor && clear_cursor > 0) {
-            clear_cursor--;
-          }
-          if (clear_cursor >= active_indices.size()) {
-            clear_cursor = 0;
-          }
-        }
+      // Remove from pending_clear if present.
+      auto it = std::find(pending_clear.begin(), pending_clear.end(), index);
+      if (it != pending_clear.end()) {
+        pending_clear.erase(it);
       }
     }
 
@@ -521,6 +497,7 @@ struct OooSystemAdapter::Impl {
       bool have = false;
       int out_index = -2;  // >=0 queue, -1 miss, -2 clear
 
+      // Priority 1: drain unblocked queue exclusively.
       if (drain_index >= 0 &&
           static_cast<std::size_t>(drain_index) < queues.size()) {
         if (!queues[drain_index].empty()) {
@@ -540,6 +517,7 @@ struct OooSystemAdapter::Impl {
         }
       }
 
+      // Priority 2: round-robin unblocked queues.
       if (!have && !queues.empty()) {
         std::size_t n = queues.size();
         for (std::size_t i = 0; i < n; ++i) {
@@ -558,6 +536,7 @@ struct OooSystemAdapter::Impl {
         }
       }
 
+      // Priority 3: miss queue.
       if (!have && !miss_queue.empty()) {
         out = miss_queue.front();
         miss_queue.pop_front();
@@ -565,17 +544,19 @@ struct OooSystemAdapter::Impl {
         have = true;
       }
 
-      if (!have && !active_indices.empty()) {
-        // Emit clear signal when all queues are blocked or miss queue empty.
+      // Priority 4 (lowest): emit clear signal for one pending queue.
+      if (!have && !pending_clear.empty()) {
+        int clear_index = pending_clear.front();
+        pending_clear.pop_front();
         out.flow_id = -1;
         out.packet_id = -1;
-        out.burst_table_index = active_indices[clear_cursor];
-        clear_cursor = (clear_cursor + 1) % active_indices.size();
+        out.burst_table_index = clear_index;
         out_index = -2;
         have = true;
       }
 
       if (!have) {
+        // Enter sleep state: no packets, no clear signals.
         return;
       }
 
@@ -585,20 +566,18 @@ struct OooSystemAdapter::Impl {
 
       owner->stable.OnPacket(out);
 
-      if (!have) {
-        return;
-      }
-
+      // Schedule next processing.
       if (drain_index >= 0 && static_cast<std::size_t>(drain_index) < queues.size() &&
           !queues[drain_index].empty()) {
         ScheduleProcess(1);
         return;
       }
 
-      if (HasUnblockedQueue() || !miss_queue.empty() || !active_indices.empty()) {
+      if (HasUnblockedQueue() || !miss_queue.empty() || !pending_clear.empty()) {
         // Pace block-queue output to avoid zero-time loops.
         ScheduleProcess(1);
       }
+      // Otherwise, enter sleep state. Will be woken by OnPacket or OnUpdate(UNBLOCK).
     }
 
     Impl *owner;
@@ -606,8 +585,7 @@ struct OooSystemAdapter::Impl {
     std::vector<std::deque<PacketCtx>> queues;
     std::vector<bool> blocking;
     std::vector<bool> released;
-    std::deque<int> active_indices;
-    std::size_t clear_cursor = 0;
+    std::deque<int> pending_clear;  // Queues pending clear signal emission.
     int rr_pointer = 0;
     int drain_index = -1;
     int pool_remaining = 0;
@@ -712,11 +690,9 @@ struct OooSystemAdapter::Impl {
       int insert_index = -1;
 
       uint64_t count = cms.UpdateAndQuery(static_cast<uint64_t>(ctx.flow_id));
-      uint64_t bloom_debug = 0;
 
       if (count >= owner->cfg.big_flow_threshold) {
         uint64_t bloom_count = bloom.UpdateAndQuery(static_cast<uint64_t>(ctx.flow_id));
-        bloom_debug = bloom_count;
         if (bloom_count == 1) {
           // First time Bloom says heavy -> allocate rule index.
           big_flow = true;
@@ -733,14 +709,10 @@ struct OooSystemAdapter::Impl {
         // Insert into BurstTable and block the queue.
         owner->burst.Insert(ctx.flow_id, insert_index);
         owner->blockq.OnUpdate(BlockUpdate::ALLOCATE, insert_index);
-      }
-
-      // DEBUG
-      if (ctx.flow_id == 101) {
-         std::cout << "[FlowTracker] ID=" << ctx.flow_id 
-                   << " CMS=" << count 
-                   << " Bloom=" << bloom_debug
-                   << " Big=" << big_flow << std::endl;
+        // In the zero-latency model, the CMS threshold being reached is equivalent to
+        // the queue size reaching threshold (since packets arrive instantly without delay).
+        // Set pass_check here to allow the rule update to proceed.
+        owner->rule_updater.OnQueueExceed(insert_index);
       }
 
       owner->SendToSlowpath(ctx, big_flow);
@@ -759,31 +731,21 @@ struct OooSystemAdapter::Impl {
 
     void OnQueueExceed(int index) {
       if (index >= 0 && static_cast<std::size_t>(index) < pass_check.size()) {
-        std::cout << "[RuleUpdater] OnQueueExceed index=" << index << std::endl;
         pass_check[index] = true;
       }
     }
 
     void OnRuleUpdate(const RuleUpdate &ru) {
-      std::cout << "[RuleUpdater] OnRuleUpdate type=" << (int)ru.type 
-                << " unblock=" << ru.unblock_index 
-                << " update=" << ru.update_entry 
-                << " replace=" << ru.replace_entry << std::endl;
-
       // Gate updates using pass_check (queue exceeded signal).
       bool allowed = false;
       if (ru.type != UpdateType::IDLE) {
         if (ru.unblock_index < 0) {
           allowed = true;
         } else if (ru.unblock_index >= 0 &&
-                   static_cast<std::size_t>(ru.unblock_index) < pass_check.size()) {
-           if (pass_check[ru.unblock_index]) {
-              std::cout << "[RuleUpdater] Allowed by pass_check for index " << ru.unblock_index << std::endl;
-              allowed = true;
-              pass_check[ru.unblock_index] = false;
-           } else {
-              std::cout << "[RuleUpdater] REJECTED: pass_check false for index " << ru.unblock_index << std::endl;
-           }
+                   static_cast<std::size_t>(ru.unblock_index) < pass_check.size() &&
+                   pass_check[ru.unblock_index]) {
+          allowed = true;
+          pass_check[ru.unblock_index] = false;
         }
       }
 
