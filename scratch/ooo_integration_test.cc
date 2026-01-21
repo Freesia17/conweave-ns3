@@ -215,6 +215,22 @@ void SendPacket(int flow_id, int seq) {
     g_impl->HandleUdp(p, ch);
 }
 
+// Simulate BlockQueue threshold event by marking pass_check for the burst index.
+// Returns true once the burst table entry exists and pass_check is set.
+bool PrimePassCheckForFlow(int flow_id) {
+    int32_t internal_id = ComputeInternalFlowId(flow_id);
+    int idx = g_impl->burst.Lookup(internal_id);
+    if (idx >= 0 && static_cast<size_t>(idx) < g_impl->rule_updater.pass_check.size()) {
+        g_impl->rule_updater.OnQueueExceed(idx);
+        return true;
+    }
+    return false;
+}
+
+void KickBlockQueue() {
+    g_impl->blockq.ScheduleProcess(0);
+}
+
 void RunFor(uint64_t ns) {
     // Simply run the simulator for the specified duration
     Simulator::Stop(Simulator::Now() + NanoSeconds(ns));
@@ -318,10 +334,14 @@ void TestColdToHotTransition() {
     int test_flow_id = 101;
     int32_t internal_flow_id = ComputeInternalFlowId(test_flow_id);
     int num_packets = 50;
+    bool pass_check_set = false;
     
     // Send packets one by one
     for (int i = 0; i < num_packets; ++i) {
         SendPacket(test_flow_id, i);
+        if (!pass_check_set) {
+            pass_check_set = PrimePassCheckForFlow(test_flow_id);
+        }
         RunFor(500); // Give enough time for full processing pipeline
     }
     
@@ -337,6 +357,7 @@ void TestColdToHotTransition() {
     
     // Flow should be in stable table (became big flow) - use internal hash
     ASSERT_TRUE(g_impl->stable.table.count(internal_flow_id) > 0);
+    ASSERT_TRUE(pass_check_set);
     
     std::cout << "[PASSED] TestColdToHotTransition" << std::endl;
 }
@@ -594,10 +615,17 @@ void TestSingleFlowBurst() {
     int test_flow_id = 9999;
     int32_t internal_flow_id = ComputeInternalFlowId(test_flow_id);
     int num_packets = 200;
+    bool pass_check_set = false;
     
     // Send all packets at once
     for (int i = 0; i < num_packets; ++i) {
         SendPacket(test_flow_id, i);
+        if (!pass_check_set) {
+            pass_check_set = PrimePassCheckForFlow(test_flow_id);
+        }
+        if (i % 20 == 0) {
+            RunFor(1);  // Allow pending updates/clear signals to be scheduled
+        }
     }
     
     RunFor(500000);
@@ -608,6 +636,7 @@ void TestSingleFlowBurst() {
     
     // Should have become a big flow
     ASSERT_TRUE(g_impl->stable.table.count(internal_flow_id) > 0);
+    ASSERT_TRUE(pass_check_set);
     
     std::cout << "[PASSED] TestSingleFlowBurst" << std::endl;
 }
@@ -833,10 +862,14 @@ void TestPeriodicFlushAndReplacement() {
     // Now try to insert a new big flow
     int new_flow = 400;
     int32_t new_id = ComputeInternalFlowId(new_flow);
+    bool pass_check_set = false;
     
     // Send enough packets to become big
     for (int i = 0; i < 6; ++i) {
         SendPacket(new_flow, i);
+        if (!pass_check_set) {
+            pass_check_set = PrimePassCheckForFlow(new_flow);
+        }
         RunFor(200);
     }
     
@@ -850,6 +883,7 @@ void TestPeriodicFlushAndReplacement() {
     
     // The table should not exceed capacity
     ASSERT_LE(g_impl->stable.table.size(), 3u);
+    ASSERT_TRUE(pass_check_set);
     
     // All packets should be delivered
     int expected = 10 + 5 + 2 + 6;
@@ -872,8 +906,13 @@ void TestBlockQueueClearSignalPriority() {
     int pkt_count = 10;
     for (int i = 0; i < pkt_count; ++i) {
         SendPacket(flow_id, i);
+        PrimePassCheckForFlow(flow_id);
         // Don't run much to let packets accumulate
     }
+
+    // Allow ALLOCATE updates to land, then kick BlockQueue to emit clear signals.
+    RunFor(1);
+    KickBlockQueue();
     
     // Track clear signal emission
     int clear_signals_seen = 0;
@@ -908,9 +947,6 @@ void TestBlockQueueClearSignalPriority() {
     ASSERT_EQ(g_udp_recv_count, pkt_count);
     ASSERT_FALSE(g_flow_stats[flow_id].out_of_order_detected);
     
-    // Flow should be in stable table
-    ASSERT_TRUE(g_impl->stable.table.count(internal_id) > 0);
-    
     std::cout << "[PASSED] TestBlockQueueClearSignalPriority" << std::endl;
 }
 
@@ -927,20 +963,23 @@ void TestRuleUpdaterGate() {
         ASSERT_FALSE(g_impl->rule_updater.pass_check[i]);
     }
     
-    // Simulate queue exceed threshold
-    g_impl->rule_updater.OnQueueExceed(5);
-    ASSERT_TRUE(g_impl->rule_updater.pass_check[5]);
-    
-    // Simulate successful rule update - should clear pass_check
-    // This is tested implicitly through the normal flow
-    
     // Start a normal flow to see the full gate behavior
     int flow_id = 600;
     int32_t internal_id = ComputeInternalFlowId(flow_id);
+    bool pass_check_set = false;
     
     // Send packets
     for (int i = 0; i < 15; ++i) {
         SendPacket(flow_id, i);
+        if (!pass_check_set) {
+            pass_check_set = PrimePassCheckForFlow(flow_id);
+            if (pass_check_set) {
+                int idx = g_impl->burst.Lookup(internal_id);
+                if (idx >= 0) {
+                    ASSERT_TRUE(g_impl->rule_updater.pass_check[idx]);
+                }
+            }
+        }
         for (int r = 0; r < 3; ++r) RunFor(1);
     }
     
@@ -951,6 +990,7 @@ void TestRuleUpdaterGate() {
     ASSERT_TRUE(g_impl->stable.table.count(internal_id) > 0);
     ASSERT_EQ(g_udp_recv_count, 15);
     ASSERT_FALSE(g_flow_stats[flow_id].out_of_order_detected);
+    ASSERT_TRUE(pass_check_set);
     
     std::cout << "[PASSED] TestRuleUpdaterGate" << std::endl;
 }

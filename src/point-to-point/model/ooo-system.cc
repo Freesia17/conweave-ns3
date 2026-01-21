@@ -709,10 +709,6 @@ struct OooSystemAdapter::Impl {
         // Insert into BurstTable and block the queue.
         owner->burst.Insert(ctx.flow_id, insert_index);
         owner->blockq.OnUpdate(BlockUpdate::ALLOCATE, insert_index);
-        // In the zero-latency model, the CMS threshold being reached is equivalent to
-        // the queue size reaching threshold (since packets arrive instantly without delay).
-        // Set pass_check here to allow the rule update to proceed.
-        owner->rule_updater.OnQueueExceed(insert_index);
       }
 
       owner->SendToSlowpath(ctx, big_flow);
