@@ -313,6 +313,7 @@ struct OooSystemAdapter::Impl {
       if (index < 0 ||
           static_cast<std::size_t>(index) >= index_to_flow.size() ||
           index_to_flow.empty()) {
+        NS_ASSERT_MSG(false, "BurstTable Insert index out of range");
         return;
       }
       if (flow_to_index.size() >= index_to_flow.size() &&
@@ -329,16 +330,22 @@ struct OooSystemAdapter::Impl {
       }
       flow_to_index[flow_id] = index;
       index_to_flow[index] = flow_id;
+      AssertConsistent();
     }
 
     void DeleteByIndex(int32_t index) {
       if (index < 0 || static_cast<std::size_t>(index) >= index_to_flow.size()) {
+        NS_ASSERT_MSG(false, "BurstTable DeleteByIndex index out of range");
         return;
       }
       int flow_id = index_to_flow[index];
       if (flow_id >= 0) {
+        auto it = flow_to_index.find(flow_id);
+        NS_ASSERT_MSG(it != flow_to_index.end() && it->second == index,
+                      "BurstTable DeleteByIndex mapping mismatch");
         flow_to_index.erase(flow_id);
         index_to_flow[index] = -1;
+        AssertConsistent();
       }
     }
 
@@ -347,6 +354,19 @@ struct OooSystemAdapter::Impl {
     Impl *owner;
     std::vector<int32_t> index_to_flow;
     std::unordered_map<int32_t, int32_t> flow_to_index;
+
+   private:
+    // Keep BurstTable mappings consistent with index occupancy.
+    void AssertConsistent() const {
+      std::size_t occupied = 0;
+      for (auto flow_id : index_to_flow) {
+        if (flow_id >= 0) {
+          ++occupied;
+        }
+      }
+      NS_ASSERT_MSG(occupied == flow_to_index.size(),
+                    "BurstTable index/map size mismatch");
+    }
   };
 
   struct BlockQueueState {
@@ -733,6 +753,9 @@ struct OooSystemAdapter::Impl {
 
     void OnRuleUpdate(const RuleUpdate &ru) {
       // Gate updates using pass_check (queue exceeded signal).
+      if (ru.type != UpdateType::IDLE) {
+        NS_ASSERT_MSG(ru.update_entry >= 0, "RuleUpdater update_entry must be valid");
+      }
       bool allowed = false;
       if (ru.type != UpdateType::IDLE) {
         if (ru.unblock_index < 0) {
@@ -814,14 +837,20 @@ struct OooSystemAdapter::Impl {
       switch (state) {
         case UpdateState::SUCCESS:
           if (front.replace_entry >= 0) {
+            NS_ASSERT_MSG(replaced_rules.find(front.replace_entry) != replaced_rules.end(),
+                          "Slowpath missing replaced rule on SUCCESS");
             replaced_rules.erase(front.replace_entry);
           }
           rules_on_the_way.pop_front();
           break;
         case UpdateState::FAIL:
+          NS_ASSERT_MSG(counters.find(front.update_entry) != counters.end(),
+                        "Slowpath missing update_entry on FAIL");
           counters.erase(front.update_entry);
           if (front.replace_entry >= 0) {
             auto it = replaced_rules.find(front.replace_entry);
+            NS_ASSERT_MSG(it != replaced_rules.end(),
+                          "Slowpath missing replaced rule on FAIL");
             if (it != replaced_rules.end()) {
               counters[front.replace_entry] = it->second;
               replaced_rules.erase(it);
@@ -871,6 +900,8 @@ struct OooSystemAdapter::Impl {
         if (big_flow &&
             pkt.burst_table_index >= 0 &&
             static_cast<std::size_t>(pkt.burst_table_index) < burst_table.size()) {
+          NS_ASSERT_MSG(burst_table[pkt.burst_table_index] < 0,
+                        "Slowpath burst slot should be empty on big_flow insert");
           if (burst_table[pkt.burst_table_index] < 0) {
             burst_table[pkt.burst_table_index] = pkt.flow_id;
           }
@@ -894,6 +925,10 @@ struct OooSystemAdapter::Impl {
         return;
       }
 
+      // Clear signal should never be marked as big_flow.
+      NS_ASSERT_MSG(!big_flow, "Slowpath clear signal must not be marked big_flow");
+      NS_ASSERT_MSG(pkt.burst_table_index >= 0,
+                    "Slowpath clear signal missing burst_table_index");
       if (pkt.burst_table_index >= 0 &&
           static_cast<std::size_t>(pkt.burst_table_index) < burst_table.size()) {
         // Clear signal: mark pending rules ready.
