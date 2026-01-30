@@ -27,6 +27,15 @@ enum class UpdateState { IDLE, SUCCESS, FAIL };
 enum class UpdateType { IDLE, INSERT, DELETE, REPLACE };
 enum class BlockUpdate { ALLOCATE, UNBLOCK };
 
+struct StableInitConfig {
+  uint16_t base_port = 10000;
+  uint16_t napps = 1;
+  uint32_t seed = 1;
+  bool enabled = false;
+};
+
+StableInitConfig g_stable_init;
+
 // Hash UDP five-tuple into a stable, non-negative flow_id.
 int32_t FiveTupleFlowId(const CustomHeader &ch) {
   uint64_t hash = 1469598103934665603ULL;  // FNV-1a 64-bit offset basis
@@ -166,6 +175,7 @@ struct OooSystemAdapter::Impl {
     flow.Reset();
     rule_updater.Reset();
     slow.Reset();
+    stable_seeded = false;
 
     if (stable_flush_event.IsRunning()) {
       stable_flush_event.Cancel();
@@ -182,10 +192,71 @@ struct OooSystemAdapter::Impl {
     ScheduleBloomClear();
   }
 
+  void MaybeSeedStableTable(uint32_t dst_ip) {
+    if (stable_seeded || !g_stable_init.enabled) {
+      return;
+    }
+    SeedStableTable(dst_ip);
+    stable_seeded = true;
+  }
+
+  void SeedStableTable(uint32_t dst_ip) {
+    stable.table.clear();
+    stable.counters.clear();
+    if (cfg.stable_table_volume == 0) {
+      return;
+    }
+
+    NS_ASSERT_MSG(g_stable_init.napps > 0, "Stable table init requires napps > 0");
+    uint32_t port_span = static_cast<uint32_t>(g_stable_init.napps) - 1;
+    NS_ASSERT_MSG(static_cast<uint32_t>(g_stable_init.base_port) + port_span <= 65535,
+                  "Stable table init port range out of bounds");
+
+    std::mt19937_64 gen(static_cast<uint64_t>(g_stable_init.seed) ^ dst_ip);
+    std::uniform_int_distribution<uint32_t> host_id_dist(0u, 65535u);
+    std::uniform_int_distribution<uint16_t> app_dist(0,
+                                                     static_cast<uint16_t>(g_stable_init.napps - 1));
+
+    std::size_t attempts = 0;
+    std::size_t max_attempts = static_cast<std::size_t>(cfg.stable_table_volume) * 100;
+    if (max_attempts < 1000) {
+      max_attempts = 1000;
+    }
+
+    while (stable.table.size() < cfg.stable_table_volume) {
+      if (++attempts > max_attempts) {
+        NS_ASSERT_MSG(false, "Stable table init exhausted attempts");
+        break;
+      }
+      CustomHeader ch;
+      uint32_t src_id = host_id_dist(gen);
+      ch.sip = 0x0b000001u + (src_id << 8);
+      ch.dip = dst_ip;
+      if (ch.sip == ch.dip) {
+        continue;
+      }
+      ch.l3Prot = 0x11;  // UDP
+      ch.udp.sport = static_cast<uint16_t>(g_stable_init.base_port + app_dist(gen));
+      ch.udp.dport = static_cast<uint16_t>(g_stable_init.base_port + app_dist(gen));
+
+      int32_t flow_id = FiveTupleFlowId(ch);
+      if (flow_id < 0) {
+        continue;
+      }
+      stable.table.insert(flow_id);
+    }
+
+    for (auto flow_id : stable.table) {
+      stable.counters[flow_id] = 0;
+    }
+  }
+
   void HandleUdp(Ptr<Packet> p, const CustomHeader &ch) {
     if (udpHandler.IsNull()) {
       return;
     }
+
+    MaybeSeedStableTable(ch.dip);
 
     // Derive flow_id from five-tuple instead of relying on tags.
     int32_t flow_id = FiveTupleFlowId(ch);
@@ -628,6 +699,7 @@ struct OooSystemAdapter::Impl {
     }
 
     void OnPacket(const PacketCtx &ctx) {
+      AssertFullOrEmpty();
       if (ctx.flow_id < 0 && ctx.burst_table_index >= 0) {
         // Clear signals pass through as "miss" to FlowTracker.
         owner->flow.OnPacket(ctx);
@@ -666,6 +738,7 @@ struct OooSystemAdapter::Impl {
         default:
           break;
       }
+      AssertFullOrEmpty();
     }
 
     std::map<int32_t, int32_t> FlushCounters() {
@@ -675,12 +748,19 @@ struct OooSystemAdapter::Impl {
       for (auto flow_id : table) {
         counters[flow_id] = 0;
       }
+      AssertFullOrEmpty();
       return snapshot;
     }
 
     Impl *owner;
     std::set<int32_t> table;
     std::map<int32_t, int32_t> counters;
+
+   private:
+    void AssertFullOrEmpty() const {
+      NS_ASSERT_MSG(table.empty() || table.size() == owner->cfg.stable_table_volume,
+                    "StableTable must be empty or full");
+    }
   };
 
   struct FlowTrackerState {
@@ -827,6 +907,7 @@ struct OooSystemAdapter::Impl {
           }
         }
       }
+      AssertCountersFullOrEmpty();
     }
 
     void OnUpdateState(UpdateState state) {
@@ -862,6 +943,7 @@ struct OooSystemAdapter::Impl {
         default:
           break;
       }
+      AssertCountersFullOrEmpty();
     }
 
    private:
@@ -1080,6 +1162,13 @@ struct OooSystemAdapter::Impl {
     EventId emit_event;
 
     static const int kLargeCount = 0x3f3f3f3f;
+
+   private:
+    void AssertCountersFullOrEmpty() const {
+      NS_ASSERT_MSG(counters.empty() ||
+                        counters.size() == owner->cfg.stable_table_volume,
+                    "Slowpath counters must be empty or full");
+    }
   };
 
   Config cfg;
@@ -1091,6 +1180,7 @@ struct OooSystemAdapter::Impl {
   FlowTrackerState flow;
   RuleUpdaterState rule_updater;
   SlowpathState slow;
+  bool stable_seeded = false;
 
   EventId stable_flush_event;
   EventId cms_clear_event;
@@ -1105,6 +1195,13 @@ OooSystemAdapter::OooSystemAdapter(const Config &cfg) : m_impl(new Impl(cfg)) {}
 OooSystemAdapter::~OooSystemAdapter() = default;
 
 void OooSystemAdapter::SetConfig(const Config &cfg) { m_impl->SetConfig(cfg); }
+
+void OooSystemAdapter::ConfigureStableTableInit(uint16_t base_port, uint16_t napps, uint32_t seed) {
+  g_stable_init.base_port = base_port;
+  g_stable_init.napps = napps == 0 ? 1 : napps;
+  g_stable_init.seed = seed;
+  g_stable_init.enabled = true;
+}
 
 void OooSystemAdapter::SetUdpHandler(Callback<void, Ptr<Packet>, const CustomHeader &> cb) {
   m_impl->udpHandler = cb;

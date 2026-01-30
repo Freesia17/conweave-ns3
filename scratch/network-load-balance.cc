@@ -39,6 +39,7 @@
 #include "ns3/error-model.h"
 #include "ns3/global-route-manager.h"
 #include "ns3/internet-module.h"
+#include "ns3/ooo-system.h"
 #include "ns3/ipv4-static-routing-helper.h"
 #include "ns3/letflow-routing.h"
 #include "ns3/packet.h"
@@ -146,6 +147,8 @@ uint32_t buffer_size = 0;  // 0 to set buffer size automatically
 double load = 10.0;
 int enable_irn = 0;
 int random_seed = 1;  // change this randomly if you want random expt
+uint16_t base_port = 10000;
+uint32_t napps = 1;
 
 uint64_t maxRtt, maxBdp;
 
@@ -861,6 +864,16 @@ int main(int argc, char *argv[]) {
                 conf >> v;
                 packet_payload_size = v;
                 std::cerr << "PACKET_PAYLOAD_SIZE\t\t" << packet_payload_size << "\n";
+            } else if (key.compare("BASE_PORT") == 0) {
+                uint32_t v;
+                conf >> v;
+                base_port = static_cast<uint16_t>(v);
+                std::cerr << "BASE_PORT\t\t\t" << base_port << "\n";
+            } else if (key.compare("NAPPS") == 0) {
+                uint32_t v;
+                conf >> v;
+                napps = v;
+                std::cerr << "NAPPS\t\t\t" << napps << "\n";
             } else if (key.compare("L2_CHUNK_SIZE") == 0) {
                 uint32_t v;
                 conf >> v;
@@ -1106,6 +1119,12 @@ int main(int argc, char *argv[]) {
     NS_LOG_INFO("Initialize random seed: " << random_seed);
     srand((unsigned)random_seed);
     SeedManager::SetSeed(random_seed);
+    if (napps == 0) {
+        napps = 1;
+    }
+    NS_ASSERT_MSG(static_cast<uint32_t>(base_port) + napps - 1 <= 65535,
+                  "BASE_PORT + NAPPS exceeds valid port range");
+    OooSystemAdapter::ConfigureStableTableInit(base_port, napps, static_cast<uint32_t>(random_seed));
 
     /**
      * @brief PFC/QCN setup
@@ -1722,8 +1741,8 @@ int main(int argc, char *argv[]) {
     // maintain port number for each host
     for (uint32_t i = 0; i < node_num; i++) {
         if (n.Get(i)->GetNodeType() == 0) {
-            portNumber[i] = 10000;  // each host use port number from 10000
-            dportNumber[i] = 100;
+            portNumber[i] = base_port;  // each host use port number from base_port
+            dportNumber[i] = base_port;
         }
     }
 

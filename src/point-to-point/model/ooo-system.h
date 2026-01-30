@@ -48,6 +48,8 @@ public:
 
   void SetConfig(const Config &cfg);
   void SetUdpHandler(Callback<void, Ptr<Packet>, const CustomHeader &> cb);
+  // Configure per-host stable table prefill behavior (used by simulations).
+  static void ConfigureStableTableInit(uint16_t base_port, uint16_t napps, uint32_t seed);
 
   // Entry point for UDP packets from RdmaHw::Receive (flow_id from five-tuple).
   void HandleUdp(Ptr<Packet> p, const CustomHeader &ch);
