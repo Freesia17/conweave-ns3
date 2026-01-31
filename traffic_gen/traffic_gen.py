@@ -109,6 +109,7 @@ if __name__ == "__main__":
     parser.add_option("-c", "--cdf", dest = "cdf_file", help = "cdf file", default = "uniform_distribution.txt")
     parser.add_option("-n", "--nhost", dest = "nhost", help = "number of hosts")
     parser.add_option("-a", "--napps", dest = "napps", default="1", help = "apps per host")
+    parser.add_option("-p", "--base-port", dest = "base_port", default="10000", help = "base port for app mapping")
     parser.add_option("-l", "--load", dest = "load", default="0.3", help = "load")
     parser.add_option("-b", "--bandwidth", dest = "bandwidth", default="10G", help = "bandwidth")
     parser.add_option("-t", "--time", dest = "time", default="10", help = "time")
@@ -120,7 +121,7 @@ if __name__ == "__main__":
     options,args = parser.parse_args()
 
     base_t = 2000000000
-    base_port = 10000
+    base_port = int(options.base_port) if options.base_port else 10000
 
     if not options.nhost:
         print("Missing required argument: number of hosts. Please specify it using -n or --nhost.")
@@ -128,6 +129,11 @@ if __name__ == "__main__":
         
     nhost = int(options.nhost)
     napps = int(options.napps) if options.napps else 1
+    if napps <= 0:
+        napps = 1
+    if base_port + napps - 1 > 65535:
+        print("Invalid base_port/napps: port range exceeds 65535")
+        sys.exit(0)
     load = float(options.load)
     bandwidth = translate_bandwidth(options.bandwidth)
     # Bandwidth here is physical link speed (e.g., 10Gbps)

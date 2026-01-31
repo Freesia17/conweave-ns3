@@ -83,6 +83,8 @@ SAMPLE_FEEDBACK 0
 ENABLE_QCN 1
 USE_DYNAMIC_PFC_THRESHOLD 1
 PACKET_PAYLOAD_SIZE 1000
+BASE_PORT {base_port}
+NAPPS {napps}
 
 
 LINK_DOWN 0 0 0
@@ -146,6 +148,10 @@ def main():
                         default='leaf_spine_128_100G', help="the name of the topology file (default: leaf_spine_128_100G_OS2)")
     parser.add_argument('--cdf', dest='cdf', action='store',
                         default='AliStorage2019', help="the name of the cdf file (default: AliStorage2019)")
+    parser.add_argument('--napps', dest='napps', action='store',
+                        type=int, default=1, help="apps per host (default: 1)")
+    parser.add_argument('--base-port', dest='base_port', action='store',
+                        type=int, default=10000, help="base port for apps (default: 10000)")
     parser.add_argument('--enforce_win', dest='enforce_win', action='store',
                         type=int, default=0, help="enforce to use window scheme (default: 0)")
     parser.add_argument('--sw_monitoring_interval', dest='sw_monitoring_interval', action='store',
@@ -183,6 +189,8 @@ def main():
     topo = args.topo
     enforce_win = args.enforce_win
     cdf = args.cdf
+    napps = int(args.napps)
+    base_port = int(args.base_port)
     flowgen_start_time = FLOWGEN_DEFAULT_TIME  # default: 2.0
     flowgen_stop_time = flowgen_start_time + \
         float(args.simul_time)  # default: 2.0
@@ -224,17 +232,21 @@ def main():
             load=hostload, cdf=cdf, n_host=n_host))
     else:  # make the input traffic file
         print("Generate a input traffic file...")
-        print("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
+        print("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -a {napps} -p {base_port} -l {load} -b {bw} -t {time} -o {output}".format(
             cdf=os.getcwd() + "/../traffic_gen/" + args.cdf + ".txt",
             n_host=n_host,
+            napps=napps,
+            base_port=base_port,
             load=hostload / 100.0,
             bw=args.bw + "G",
             time=args.simul_time,
             output=os.getcwd() + "/config/" + flow + ".txt"))
 
-        os.system("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -l {load} -b {bw} -t {time} -o {output}".format(
+        os.system("python ./traffic_gen/traffic_gen.py -c {cdf} -n {n_host} -a {napps} -p {base_port} -l {load} -b {bw} -t {time} -o {output}".format(
             cdf=os.getcwd() + "/traffic_gen/" + args.cdf + ".txt",
             n_host=n_host,
+            napps=napps,
+            base_port=base_port,
             load=hostload / 100.0,
             bw=args.bw + "G",
             time=args.simul_time,
@@ -370,7 +382,8 @@ def main():
                                         ai=ai, hai=hai, dctcp_ai=dctcp_ai,
                                         has_win=has_win, var_win=var_win,
                                         fast_react=fast_react, mi=mi, int_multi=int_multi, ewma_gain=ewma_gain,
-                                        kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map)
+                                        kmax_map=kmax_map, kmin_map=kmin_map, pmax_map=pmax_map,
+                                        base_port=base_port, napps=napps)
     else:
         print("unknown cc:{}".format(args.cc))
 
